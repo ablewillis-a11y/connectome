@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Connectome">
+<meta name="theme-color" content="#000000">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Connectome</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;overscroll-behavior:none}
+  body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
+  canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block;touch-action:none;background:#000}
+  /* Studio: the only place any text ever appears */
+  #studio{position:fixed;inset:0;z-index:2;background:rgba(0,0,0,.86);color:#e8e6df;
+    font:15px/1.35 -apple-system,"Helvetica Neue",Arial,sans-serif;overflow-y:auto;-webkit-overflow-scrolling:touch;
+    padding:calc(env(safe-area-inset-top,0px) + 18px) 20px calc(env(safe-area-inset-bottom,0px) + 24px)}
+  #studio[hidden]{display:none}
+  #studio h1{font-size:13px;font-weight:600;letter-spacing:.08em;margin:0 0 16px;color:#9a978f}
+  .row{display:grid;grid-template-columns:1fr auto;gap:2px 12px;align-items:center;margin:0 0 14px}
+  .row label{font-size:14px}
+  .row output{font:12px ui-monospace,Menlo,monospace;color:#9a978f;text-align:right}
+  .row input[type=range]{grid-column:1/-1;width:100%;accent-color:#e8e6df}
+  .group{border-top:1px solid #2a2a28;padding-top:14px;margin-top:6px}
+  .checks{display:flex;flex-wrap:wrap;gap:10px 18px;margin:4px 0 14px}
+  .checks label{display:flex;gap:8px;align-items:center}
+  select{font:inherit;color:#e8e6df;background:#151514;border:1px solid #333;border-radius:6px;padding:8px 10px;width:100%;margin:4px 0 14px}
+  .buttons{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}
+  button{font:inherit;color:#e8e6df;background:#151514;border:1px solid #333;border-radius:8px;padding:12px}
+  button.primary{grid-column:1/-1;background:#e8e6df;color:#000;border-color:#e8e6df}
+  .hint{font-size:12px;color:#7d7a73;margin:14px 0 0}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="studio" hidden>
+  <h1>STUDIO</h1>
+  <div class="checks" id="s-instr"></div>
+  <label for="s-palette" style="font-size:14px">Palette</label>
+  <select id="s-palette">
+    <option value="six">Six</option>
+    <option value="expanded">Expanded</option>
+    <option value="spectrum">Spectrum</option>
+  </select>
+  <div class="row"><label for="s-points">Points</label><output id="o-points"></output><input type="range" id="s-points" min="100" max="3000" step="50"></div>
+  <div class="row"><label for="s-range">Roll 1 to N, line shows on a 6</label><output id="o-range"></output><input type="range" id="s-range" min="6" max="60" step="1"></div>
+  <div class="row"><label for="s-life">How long a line stays (seconds)</label><output id="o-life"></output><input type="range" id="s-life" min="0.2" max="4" step="0.05"></div>
+  <div class="row"><label for="s-speed">Speed</label><output id="o-speed"></output><input type="range" id="s-speed" min="0.1" max="2" step="0.05"></div>
+  <div class="row"><label for="s-drift">Drift per step</label><output id="o-drift"></output><input type="range" id="s-drift" min="0" max="5" step="0.1"></div>
+  <div class="row"><label for="s-tether">Pull toward home</label><output id="o-tether"></output><input type="range" id="s-tether" min="0" max="1" step="0.05"></div>
+  <div class="row"><label for="s-tilt">Tilt strength</label><output id="o-tilt"></output><input type="range" id="s-tilt" min="0" max="3" step="0.1"></div>
+  <div class="row"><label for="s-width">Line width</label><output id="o-width"></output><input type="range" id="s-width" min="0.3" max="3" step="0.1"></div>
+  <div class="checks"><label><input type="checkbox" id="s-ff"> Fast-forward while asleep</label></div>
+  <div class="buttons">
+    <button type="button" id="s-new">New points</button>
+    <button type="button" id="s-reset">Use file settings</button>
+    <button type="button" class="primary" id="s-done">Done</button>
+  </div>
+  <p class="hint" id="s-hint"></p>
+</div>
+
+<script>
+"use strict";
+/* ============================================================
+   Connectome — a phone that only does one thing.
+   Settings come from (lowest to highest): built-in defaults,
+   settings.json on the host, then changes made in the studio.
+   ============================================================ */
+const BUILTIN = {points:1000, range:20, life:0.75, speed:0.4, drift:1.2, tether:0.25, tilt:1,
+  width:0.8, palette:"six", instructions:["lines","fill"], fastForward:true, extra:[]};
+const STEP = 500;                    // ms of piece-time between rolls
+const LS_CFG = "connectome.cfg", LS_STATE = "connectome.state";
+const ls = {get(k){try{return JSON.parse(localStorage.getItem(k))}catch(e){return null}},
+            set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}},
+            del(k){try{localStorage.removeItem(k)}catch(e){}}};
+
+let FILE = {};                       // defaults from settings.json
+let CFG = Object.assign({}, BUILTIN, ls.get(LS_CFG) || {});
+
+/* ---------- palettes (index 0 is always black, the OLED "off") ---------- */
+const PALETTES = {
+  six: ["#000000","#efece4","#d23b2f","#ecc12f","#3561b0","#3f8150"],
+  expanded: ["#000000","#efece4","#e4472f","#b0233c","#f08a24","#d9a62e","#f2dc4b","#8a9a34",
+             "#2f8a4e","#1f8a8a","#2a7fc4","#2b3fa3","#6b3fa0","#e28aa8","#8a5631"],
+  spectrum: ["#000000"].concat(Array.from({length:24},(_,i)=>`hsl(${i*15},82%,56%)`))
+};
+const toRGB = (()=>{const c=document.createElement("canvas").getContext("2d");
+  return s=>{c.fillStyle="#000";c.fillStyle=s;const h=c.fillStyle; // normalizes to #rrggbb
+    if(h[0]==="#")return[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
+    const m=h.match(/\d+/g);return[+m[0],+m[1],+m[2]]}})();
+let PAL = [], PAL_RGB = [];
+function setPalette(){PAL = PALETTES[CFG.palette] || PALETTES.six; PAL_RGB = PAL.map(toRGB); if(fill)fill.reset()}
+
+/* ---------- canvas ---------- */
+const cv = document.getElementById("c"), g = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1, U = 1;    // U scales sizes to the screen
+function resize(){
+  const nw = innerWidth, nh = innerHeight; DPR = Math.min(3, devicePixelRatio || 1);
+  if(W && pts){ const sx = nw/W, sy = nh/H; for(const A of [pts.home,pts.from,pts.to]) for(let i=0;i<A.length;i+=2){A[i]*=sx;A[i+1]*=sy} }
+  W = nw; H = nh; U = Math.min(W,H)/600;
+  cv.width = Math.round(W*DPR); cv.height = Math.round(H*DPR);
+  g.setTransform(DPR,0,0,DPR,0,0);
+  if(fill) fill.resize();
+}
+
+/* ---------- the points ---------- */
+let pts = null;  // {n, home, from, to, partner, born, color, phase, lastRoll}
+function rand(){return Math.random()}
+function gauss(){let u=0,v=0;while(!u)u=rand();while(!v)v=rand();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+function newPoints(){
+  const n = Math.round(CFG.points), home = new Float32Array(n*2);
+  const k = 5 + Math.floor(rand()*7), centers = [];
+  for(let c=0;c<k;c++) centers.push([W*(.08+rand()*.84), H*(.08+rand()*.84), (20+rand()*90)*U]);
+  for(let i=0;i<n;i++){
+    let x,y;
+    if(rand() < .18){x = rand()*W; y = rand()*H}
+    else{const [cx,cy,s] = centers[Math.floor(rand()*k)]; x = cx+gauss()*s; y = cy+gauss()*s}
+    home[i*2] = Math.min(W,Math.max(0,x)); home[i*2+1] = Math.min(H,Math.max(0,y));
+  }
+  const partner = new Uint16Array(n);
+  for(let i=0;i<n;i++){let j;do{j=Math.floor(rand()*n)}while(j===i);partner[i]=j}
+  pts = {n, home, from:home.slice(), to:home.slice(), partner, born:new Float64Array(n).fill(-1e12),
+         color:new Uint8Array(n), phase:new Float32Array(n).map(()=>rand()*STEP), lastRoll:new Int32Array(n).fill(-1)};
+  if(fill) fill.reset();
+  saveState();
+}
+
+/* ---------- drift, with an optional gentle pull back toward each point's home ---------- */
+const reflect = (x,L)=>{const m=((x%(2*L))+2*L)%(2*L);return m>L?2*L-m:m};
+const kOf = ()=>CFG.tether*4e-4;     // pull per step
+let tiltBias = [0,0];                // px per step, from tilting the phone
+function driftStep(){
+  const D = CFG.drift*U, k = kOf(), {home,from,to} = pts;
+  for(let i=0;i<to.length;i++){
+    from[i] = to[i];
+    const L = i%2 ? H : W;
+    to[i] = reflect(to[i] + (rand()*2-1)*D + tiltBias[i%2] - k*(to[i]-home[i]), L);
+  }
+}
+/* Fast-forward: jump the random walk ahead by many steps at once (exact for the pulled walk). */
+function fastForward(ms){
+  if(!CFG.fastForward || !pts || ms < 2000) return;
+  const n = ms*CFG.speed/STEP, D = CFG.drift*U, s2 = D*D/3, k = kOf(), {home,from,to} = pts;
+  const q = k>0 ? Math.pow(1-k, n) : 1;
+  const v = k>0 ? s2*(1-q*q)/(1-(1-k)*(1-k)) : n*s2, sd = Math.sqrt(v);
+  for(let i=0;i<to.length;i++){
+    const L = i%2 ? H : W;
+    to[i] = reflect(home[i] + (to[i]-home[i])*q + sd*gauss(), L); from[i] = to[i];
+  }
+}
+
+/* ---------- instructions (built-ins below; more can be added as files) ---------- */
+const INSTR = {};
+window.Connectome = {register(id, def){INSTR[id] = def; if(!CFG.instructions.includes(id) && def.enabled !== false) CFG.instructions.push(id); buildInstrChecks()}};
+let current = 0;
+const activeList = ()=>CFG.instructions.filter(id=>INSTR[id]);
+const activeId = ()=>{const a = activeList(); return a.length ? a[current % a.length] : null};
+
+/* Lines: the original instruction, on black */
+Connectome.register("lines", {label:"Lines",
+  draw(A){
+    g.fillStyle = "#000"; g.fillRect(0,0,W,H);
+    g.lineWidth = CFG.width; g.lineCap = "round";
+    const LIFE = CFG.life*1000, IN = Math.min(120, LIFE*.2), OUT = Math.min(300, LIFE*.4);
+    for(const i of A.visible){
+      const age = A.now - pts.born[i];
+      g.globalAlpha = Math.min(1, age/IN) * Math.min(1, (LIFE-age)/OUT);
+      g.strokeStyle = PAL[1 + pts.color[i] % (PAL.length-1)];   // never black on black
+      const j = pts.partner[i]; g.beginPath(); g.moveTo(A.x(i),A.y(i)); g.lineTo(A.x(j),A.y(j)); g.stroke();
+    }
+    g.globalAlpha = 1;
+  }});
+
+/* Fill: the lines are never drawn; the shapes they enclose are colored, no two neighbors alike */
+let fill = null;
+function makeFill(){
+  let FW, FH, NP, lineCv, lg, outCv, og, img, prevCol, label, mask, stack, last = -1, havePrev = false;
+  function resize(){
+    FW = Math.max(1,Math.round(W)); FH = Math.max(1,Math.round(H)); NP = FW*FH;
+    lineCv = document.createElement("canvas"); lineCv.width = FW; lineCv.height = FH; lg = lineCv.getContext("2d",{willReadFrequently:true});
+    outCv = document.createElement("canvas"); outCv.width = FW; outCv.height = FH; og = outCv.getContext("2d"); img = og.createImageData(FW,FH);
+    prevCol = new Uint8Array(NP); label = new Int32Array(NP); mask = new Uint8Array(NP); stack = new Int32Array(NP); havePrev = false; last = -1;
+  }
+  function compute(A){
+    const K = PAL.length;
+    lg.clearRect(0,0,FW,FH); lg.lineWidth = 2; lg.strokeStyle = "#000"; lg.beginPath();
+    for(const i of A.visible){const j = pts.partner[i]; lg.moveTo(A.x(i),A.y(i)); lg.lineTo(A.x(j),A.y(j))}
+    lg.stroke();
+    const a = lg.getImageData(0,0,FW,FH).data;
+    for(let q=0;q<NP;q++){mask[q] = a[q*4+3] > 60 ? 1 : 0; label[q] = mask[q] ? -2 : -1}
+    let nreg = 0;
+    for(let q0=0;q0<NP;q0++){
+      if(label[q0] !== -1) continue;
+      let sp = 0; stack[sp++] = q0; label[q0] = nreg;
+      while(sp){const q = stack[--sp], x = q%FW;
+        if(x>0 && label[q-1]===-1){label[q-1]=nreg;stack[sp++]=q-1}
+        if(x<FW-1 && label[q+1]===-1){label[q+1]=nreg;stack[sp++]=q+1}
+        if(q>=FW && label[q-FW]===-1){label[q-FW]=nreg;stack[sp++]=q-FW}
+        if(q<NP-FW && label[q+FW]===-1){label[q+FW]=nreg;stack[sp++]=q+FW}}
+      nreg++;
+    }
+    if(!nreg){label.fill(0); nreg = 1}
+    const adj = Array.from({length:nreg},()=>new Set());
+    const near = (q,dx,dy)=>{let x=q%FW,y=(q/FW)|0;for(let s=1;s<=4;s++){x+=dx;y+=dy;if(x<0||y<0||x>=FW||y>=FH)return -1;const r=y*FW+x;if(!mask[r])return label[r]}return -1};
+    for(let q=0;q<NP;q++){ if(!mask[q]) continue;
+      const l=near(q,-1,0), r=near(q,1,0); if(l>=0&&r>=0&&l!==r){adj[l].add(r);adj[r].add(l)}
+      const u=near(q,0,-1), d=near(q,0,1); if(u>=0&&d>=0&&u!==d){adj[u].add(d);adj[d].add(u)} }
+    for(let pass=0;pass<4;pass++) for(let q=0;q<NP;q++){ if(label[q]>=0) continue; const x=q%FW; let v=-1;
+      if(x>0&&label[q-1]>=0)v=label[q-1]; else if(q>=FW&&label[q-FW]>=0)v=label[q-FW]; else if(x<FW-1&&label[q+1]>=0)v=label[q+1]; else if(q<NP-FW&&label[q+FW]>=0)v=label[q+FW];
+      if(v>=0) label[q]=v }
+    for(let q=0;q<NP;q++) if(label[q]<0) label[q]=0;
+    // slivers too small to read as shapes take the color of their biggest neighbor instead of counting
+    const size = new Int32Array(nreg); for(let q=0;q<NP;q++) size[label[q]]++;
+    const TINY = 24, tiny = new Uint8Array(nreg);
+    for(let v=0;v<nreg;v++) if(size[v] < TINY && adj[v].size) tiny[v] = 1;
+    for(let v=0;v<nreg;v++) if(!tiny[v]) for(const u of adj[v]) if(tiny[u]) adj[v].delete(u);
+    // each shape leans toward the color already under it, so colors hold steady between frames
+    const votes = new Float32Array(nreg*K);
+    if(havePrev) for(let q=0;q<NP;q+=3) if(!mask[q]) votes[label[q]*K + prevCol[q]]++;
+    // the biggest shape, usually the open space around everything, prefers black: the screen stays mostly off
+    let big = 0; for(let v=1;v<nreg;v++) if(size[v] > size[big]) big = v;
+    votes[big*K] += NP;
+    // smallest-last ordering: a planar map always leaves a free color among six
+    const deg = adj.map(s=>s.size), gone = new Uint8Array(nreg), order = [], buckets = [];
+    let need = 0;
+    for(let v=0;v<nreg;v++){ if(tiny[v]){ gone[v] = 1; continue } need++; (buckets[deg[v]]||(buckets[deg[v]]=[])).push(v) }
+    let low = 0;
+    while(order.length < need){
+      while(!buckets[low] || !buckets[low].length) low++;
+      const v = buckets[low].pop(); if(gone[v] || deg[v] !== low) continue;
+      gone[v] = 1; order.push(v);
+      for(const u of adj[v]) if(!gone[u]){deg[u]--; (buckets[deg[u]]||(buckets[deg[u]]=[])).push(u); if(deg[u]<low) low = deg[u]}
+    }
+    const col = new Int16Array(nreg).fill(-1), used = new Uint8Array(K);
+    col[big] = 0;                       // color the open space first so new shapes at its edge can't take black from it
+    for(let k=order.length-1;k>=0;k--){
+      const v = order[k]; if(v === big) continue; used.fill(0); for(const u of adj[v]) if(col[u]>=0) used[col[u]] = 1;
+      let best = -1, bv = -1;
+      for(let c=0;c<K;c++){ if(used[c]) continue; const sc = votes[v*K+c] + rand()*.5; if(sc>bv){bv=sc;best=c} }
+      col[v] = best < 0 ? 0 : best;
+    }
+    for(let v=0;v<nreg;v++) if(tiny[v]){ let b = -1; for(const u of adj[v]) if(!tiny[u] && (b < 0 || size[u] > size[b])) b = u; col[v] = b >= 0 ? col[b] : 0 }
+    const d = img.data;
+    for(let q=0;q<NP;q++){const c = col[label[q]], rgb = PAL_RGB[c]; prevCol[q] = c; const o = q*4; d[o]=rgb[0]; d[o+1]=rgb[1]; d[o+2]=rgb[2]; d[o+3]=255}
+    og.putImageData(img,0,0); havePrev = true;
+  }
+  return {
+    resize, reset(){havePrev = false; last = -1},
+    draw(A){
+      if(last < 0 || A.real - last > 80){ last = A.real; compute(A) }
+      g.imageSmoothingEnabled = false; g.drawImage(outCv,0,0,W,H);
+    }
+  };
+}
+Connectome.register("fill", {label:"Fill", draw(A){ fill.draw(A) }});
+
+/* ---------- the clock and the rolls ---------- */
+let clock = 0, prevReal = null, lastDrift = -1, t0 = 0, kEase = 0;
+const posX = i => pts.from[i*2]   + (pts.to[i*2]  -pts.from[i*2])  *kEase;
+const posY = i => pts.from[i*2+1] + (pts.to[i*2+1]-pts.from[i*2+1])*kEase;
+function frame(real){
+  if(prevReal !== null) clock += Math.min(100, real-prevReal) * CFG.speed;
+  prevReal = real;
+  const t = clock - t0, d = Math.floor(t/STEP);
+  if(d !== lastDrift){ lastDrift = d; driftStep() }
+  const f = (t%STEP)/STEP; kEase = f*f*(3-2*f);
+  const R = Math.round(CFG.range), LIFE = CFG.life*1000, visible = [];
+  for(let i=0;i<pts.n;i++){
+    const s = Math.floor((t + pts.phase[i]) / STEP);
+    if(s !== pts.lastRoll[i]){ pts.lastRoll[i] = s;
+      if(1 + Math.floor(rand()*R) === 6){ pts.born[i] = clock; pts.color[i] = Math.floor(rand()*250) } }
+    const age = clock - pts.born[i];
+    if(age >= 0 && age < LIFE) visible.push(i);
+  }
+  const id = activeId();
+  if(id) INSTR[id].draw({now:clock, real, visible, x:posX, y:posY, W, H, cfg:CFG, palette:PAL, points:pts, ctx:g});
+  requestAnimationFrame(frame);
+}
+
+/* ---------- saving, sleeping and waking ---------- */
+function saveState(){
+  if(!pts) return;
+  ls.set(LS_STATE, {W, H, savedAt:Date.now(), current,
+    home:Array.from(pts.home, v=>Math.round(v*10)/10), to:Array.from(pts.to, v=>Math.round(v*10)/10), partner:Array.from(pts.partner)});
+}
+function restoreState(){
+  const s = ls.get(LS_STATE);
+  if(!s || !s.home || s.home.length !== Math.round(CFG.points)*2) return false;
+  const n = s.home.length/2, sx = W/s.W, sy = H/s.H;
+  const home = new Float32Array(s.home), to = new Float32Array(s.to);
+  for(let i=0;i<home.length;i+=2){home[i]*=sx;home[i+1]*=sy;to[i]*=sx;to[i+1]*=sy}
+  pts = {n, home, from:to.slice(), to, partner:new Uint16Array(s.partner), born:new Float64Array(n).fill(-1e12),
+         color:new Uint8Array(n), phase:new Float32Array(n).map(()=>rand()*STEP), lastRoll:new Int32Array(n).fill(-1)};
+  current = s.current || 0;
+  fastForward(Date.now() - s.savedAt);
+  return true;
+}
+let hiddenAt = null, wakeLock = null;
+async function keepAwake(){ try{ if("wakeLock" in navigator && document.visibilityState==="visible") wakeLock = await navigator.wakeLock.request("screen") }catch(e){} }
+document.addEventListener("visibilitychange", ()=>{
+  if(document.visibilityState === "hidden"){ hiddenAt = Date.now(); saveState() }
+  else{
+    if(hiddenAt !== null){ fastForward(Date.now() - hiddenAt); hiddenAt = null; prevReal = null; if(fill) fill.reset() }
+    if(window.__updateReady) location.reload();
+    keepAwake(); restRest = true;
+  }
+});
+addEventListener("pagehide", saveState);
+setInterval(saveState, 15000);
+
+/* ---------- motion: tilt drifts the points downhill; hold + tilt adjusts ---------- */
+let ori = null, rest = null, restRest = true, motionAsked = false;
+function askMotion(){
+  if(motionAsked) return; motionAsked = true;
+  const ask = (E)=> E && typeof E.requestPermission === "function" ? E.requestPermission().catch(()=>"denied") : Promise.resolve("granted");
+  Promise.all([ask(window.DeviceOrientationEvent), ask(window.DeviceMotionEvent)]).then(()=>{
+    addEventListener("deviceorientation", e=>{
+      if(e.beta == null) return;
+      ori = [e.beta, e.gamma];
+      if(restRest || !rest){ rest = ori.slice(); restRest = false }
+      // the rest angle slowly follows how you are holding it, so only changes register as tilt
+      if(!hold) { rest[0] += (ori[0]-rest[0])*0.004; rest[1] += (ori[1]-rest[1])*0.004 }
+      if(hold) applyHold();
+      else { const c = 0.03*CFG.tilt*U; tiltBias = [clampN((ori[1]-rest[1])*c, 2.5*U), clampN((ori[0]-rest[0])*c, 2.5*U)] }
+    });
+    let shakes = [];
+    addEventListener("devicemotion", e=>{
+      const a = e.acceleration; if(!a || a.x == null) return;
+      if(Math.hypot(a.x,a.y,a.z) > 16){ const now = Date.now(); shakes = shakes.filter(t=>now-t<700); shakes.push(now);
+        if(shakes.length >= 3 && now - lastShake > 1500){ lastShake = now; shakes = []; newPoints() } }
+    });
+  });
+}
+let lastShake = 0;
+const clampN = (v,m)=>Math.max(-m,Math.min(m,v));
+
+/* ---------- touch: tap, double-tap, hold, three-finger hold ---------- */
+let hold = null, holdTimer = null, studioTimer = null, down = null, lastTap = null;
+function startHold(){
+  hold = {ori: ori ? ori.slice() : null, range: CFG.range, speed: CFG.speed, x: down.x, y: down.y, dx:0, dy:0};
+  tiltBias = [0,0];
+}
+function applyHold(){
+  if(!hold) return;
+  let dRange = 0, dSpeed = 0;
+  if(hold.ori && ori){ dRange = -(ori[0]-hold.ori[0])*0.8; dSpeed = (ori[1]-hold.ori[1])/25 }
+  dRange += hold.dy*0.15; dSpeed += hold.dx/150;        // dragging works too, for when motion is off
+  CFG.range = Math.max(6, Math.min(60, hold.range + dRange));
+  CFG.speed = Math.max(0.1, Math.min(2, hold.speed * Math.pow(2, dSpeed)));
+}
+function endHold(){ if(hold){ hold = null; saveCfg() } }
+function onDown(x,y,touches){
+  askMotion(); keepAwake();
+  if(touches >= 3){ clearTimeout(holdTimer); clearTimeout(studioTimer); studioTimer = setTimeout(openStudio, 700); down = null; return }
+  if(touches !== 1){ clearTimeout(holdTimer); return }
+  down = {x, y, t: Date.now(), moved:false};
+  holdTimer = setTimeout(startHold, 260);
+}
+function onMove(x,y){
+  if(!down) return;
+  if(Math.hypot(x-down.x, y-down.y) > 10) down.moved = true;
+  if(hold){ hold.dx = x-hold.x; hold.dy = y-hold.y; applyHold() }
+}
+function onUp(x,y){
+  clearTimeout(holdTimer); clearTimeout(studioTimer);
+  if(hold){ endHold(); down = null; return }
+  if(down && !down.moved && Date.now()-down.t < 260){
+    const now = Date.now();
+    if(lastTap && now-lastTap.t < 320 && Math.hypot(x-lastTap.x,y-lastTap.y) < 40){ nextInstruction(); lastTap = null }
+    else lastTap = {t:now, x, y};
+  }
+  down = null;
+}
+cv.addEventListener("touchstart", e=>{ e.preventDefault(); const t=e.touches[0]; onDown(t.clientX,t.clientY,e.touches.length) }, {passive:false});
+cv.addEventListener("touchmove",  e=>{ e.preventDefault(); const t=e.touches[0]; onMove(t.clientX,t.clientY) }, {passive:false});
+cv.addEventListener("touchend",   e=>{ e.preventDefault(); if(e.touches.length<3) clearTimeout(studioTimer); const t=e.changedTouches[0]; if(e.touches.length===0) onUp(t.clientX,t.clientY) }, {passive:false});
+cv.addEventListener("touchcancel",()=>{ clearTimeout(holdTimer); clearTimeout(studioTimer); endHold(); down=null });
+// mouse and keys, for trying it on a computer
+cv.addEventListener("mousedown", e=>onDown(e.clientX,e.clientY,1));
+addEventListener("mousemove", e=>{ if(down) onMove(e.clientX,e.clientY) });
+addEventListener("mouseup", e=>{ if(down) onUp(e.clientX,e.clientY) });
+addEventListener("keydown", e=>{ if(e.key==="s"||e.key==="S") openStudio(); if(e.key==="r"||e.key==="R") newPoints() });
+document.addEventListener("gesturestart", e=>e.preventDefault());
+
+function nextInstruction(){ const a = activeList(); if(a.length > 1){ current = (current+1) % a.length; if(fill) fill.reset(); saveState() } }
+
+/* ---------- studio ---------- */
+const $ = id => document.getElementById(id);
+const SLIDERS = {points:v=>Math.round(v), range:v=>Math.round(v), life:v=>v.toFixed(2), speed:v=>v.toFixed(2)+"×",
+                 drift:v=>v.toFixed(1), tether:v=>v.toFixed(2), tilt:v=>v.toFixed(1), width:v=>v.toFixed(1)};
+function saveCfg(){ const o = {}; for(const k in CFG) if(JSON.stringify(CFG[k]) !== JSON.stringify(FILE[k] ?? BUILTIN[k])) o[k] = CFG[k]; ls.set(LS_CFG, o) }
+function syncStudio(){
+  for(const k in SLIDERS){ $("s-"+k).value = CFG[k]; $("o-"+k).textContent = SLIDERS[k](+CFG[k]) }
+  $("s-palette").value = CFG.palette; $("s-ff").checked = !!CFG.fastForward; buildInstrChecks();
+}
+function buildInstrChecks(){
+  const box = document.getElementById("s-instr"); if(!box) return; box.innerHTML = "";
+  for(const id in INSTR){
+    const l = document.createElement("label"), c = document.createElement("input");
+    c.type = "checkbox"; c.checked = CFG.instructions.includes(id);
+    c.onchange = ()=>{ CFG.instructions = Object.keys(INSTR).filter(k=> k===id ? c.checked : CFG.instructions.includes(k));
+      if(!activeList().length){ c.checked = true; CFG.instructions.push(id) } current = 0; saveCfg() };
+    l.append(c, document.createTextNode(INSTR[id].label || id)); box.append(l);
+  }
+}
+for(const k in SLIDERS) $("s-"+k).addEventListener("input", e=>{
+  CFG[k] = +e.target.value; $("o-"+k).textContent = SLIDERS[k](CFG[k]);
+  if(k === "points") { clearTimeout(window.__pt); window.__pt = setTimeout(newPoints, 250) }
+  saveCfg();
+});
+$("s-palette").onchange = e=>{ CFG.palette = e.target.value; setPalette(); saveCfg() };
+$("s-ff").onchange = e=>{ CFG.fastForward = e.target.checked; saveCfg() };
+$("s-new").onclick = ()=>newPoints();
+$("s-reset").onclick = ()=>{ ls.del(LS_CFG); const p = CFG.points; CFG = Object.assign({}, BUILTIN, FILE); setPalette(); syncStudio(); if(CFG.points !== p) newPoints() };
+$("s-done").onclick = ()=>{ $("studio").hidden = true };
+function openStudio(){ endHold(); tiltBias = [0,0]; down = null; syncStudio(); $("s-hint").textContent = "Version "+(window.__swVersion||"(not installed)")+". Close with Done."; $("studio").hidden = false }
+
+/* ---------- start ---------- */
+async function loadFileSettings(){
+  try{
+    const r = await fetch("settings.json", {cache:"no-store"}); if(!r.ok) throw 0;
+    FILE = await r.json();
+    const saved = ls.get(LS_CFG) || {};
+    CFG = Object.assign({}, BUILTIN, FILE, saved);
+    for(const src of (FILE.extra || [])){ const s = document.createElement("script"); s.src = src; document.head.append(s) }
+  }catch(e){}
+}
+(async function start(){
+  await loadFileSettings();
+  fill = makeFill();
+  resize(); setPalette();
+  if(!restoreState()) newPoints();
+  addEventListener("resize", resize);
+  keepAwake();
+  requestAnimationFrame(frame);
+  if("serviceWorker" in navigator && location.protocol === "https:"){
+    navigator.serviceWorker.register("sw.js").then(reg=>{
+      reg.update();
+      navigator.serviceWorker.addEventListener("message", e=>{ if(e.data && e.data.version) window.__swVersion = e.data.version });
+      if(navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage("version");
+    }).catch(()=>{});
+    let had = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener("controllerchange", ()=>{ if(had) window.__updateReady = true; had = true });
+  }
+})();
+</script>
+</body>
+</html>

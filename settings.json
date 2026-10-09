@@ -1,0 +1,14 @@
+{
+  "points": 1000,
+  "range": 20,
+  "life": 0.75,
+  "speed": 0.4,
+  "drift": 1.2,
+  "tether": 0.25,
+  "tilt": 1,
+  "width": 0.8,
+  "palette": "six",
+  "instructions": ["lines", "fill"],
+  "fastForward": true,
+  "extra": []
+}
