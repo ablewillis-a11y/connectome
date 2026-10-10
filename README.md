@@ -11,7 +11,7 @@ A phone that does one thing. 1,000 invisible points, each tied to another by an 
 | Hold one finger, then tilt left or right | Slower or faster |
 | Double-tap | Switch between Lines and Fill |
 | Shake | Scatter: start over with new points |
-| Hold three fingers for about a second | Open the studio (every setting, as sliders) |
+| Hold two fingers still for about a second | Open the studio (every setting, as sliders) |
 | Side button | Sleep and wake. While asleep, the points keep drifting, so it wakes up changed |
 
 If motion isn't available, holding one finger and dragging does the same as hold-and-tilt. On a computer: drag with the mouse, double-click, press **S** for the studio and **R** for new points.
@@ -28,7 +28,7 @@ If motion isn't available, holding one finger and dragging does the same as hold
 
 1. Open that address in **Safari** (not another browser).
 2. Tap **Share → Add to Home Screen**. Make sure **Open as Web App** is on. Tap **Add**.
-3. Open it from the new icon. Tap the screen once: iOS asks to allow motion. Allow it. (iOS asks again whenever the app fully restarts; the first tap is always the one that asks.)
+3. Open it from the new icon. Tap the screen once and lift your finger: iOS asks to allow motion. Allow it. (iOS asks again whenever the app fully restarts. Until you allow it, tilt and shake do nothing.)
 4. Open it once with Wi-Fi on so it saves itself for offline use. After that it works in airplane mode.
 
 ## Make it an object
@@ -42,7 +42,7 @@ To get out: triple-click the side button and enter your code.
 
 ## Changing it
 
-- **From the phone:** hold three fingers to open the studio. Changes are saved on the phone. "Use file settings" goes back to whatever settings.json says.
+- **From the phone:** hold two fingers still for a second to open the studio. Changes are saved on the phone. "Use file settings" goes back to whatever settings.json says.
 - **From your laptop:** edit `settings.json` on GitHub (open it, click the pencil, save). The phone picks it up the next time it opens with Wi-Fi. Changes made in the studio take priority over the file until you tap "Use file settings."
 - **A new instruction:** describe it to Claude and ask for an instruction file in this format (see `instructions/example-template.js`). Upload it to the `instructions` folder and add its path to `"extra"` in settings.json, like `"extra": ["instructions/rings.js"]`. It shows up in the studio and in the double-tap rotation.
 
@@ -69,4 +69,4 @@ To get out: triple-click the side button and enter your code.
 - Waking the phone may flash the lock screen for a moment before the piece returns.
 - If iOS clears the app from memory during a long sleep, it reloads, picks up the same points, and fast-forwards them.
 - If the phone restarts or the battery dies, Guided Access turns off. Open Connectome and triple-click again.
-- Updates: if a change on GitHub doesn't show up, open `sw.js`, change `connectome-1` to `connectome-2`, and save. That forces phones to refresh everything.
+- Updates: if a change on GitHub doesn't show up, open `sw.js`, raise the number at the end of `connectome-2`, and save. That forces phones to refresh everything.

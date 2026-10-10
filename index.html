@@ -176,84 +176,183 @@ Connectome.register("lines", {label:"Lines",
     g.globalAlpha = 1;
   }});
 
-/* Fill: the lines are never drawn; the shapes they enclose are colored, no two neighbors alike */
+/* Fill: the lines are never drawn; the shapes they enclose are colored, no two neighbors alike.
+   Shapes are computed as exact polygons, so edges stay smooth at any screen resolution. */
+/* Exact faces of a set of line segments inside a W x H rectangle.
+   segs: array of {ax,ay,bx,by,ka,kb} where ka/kb are keys for shared endpoints.
+   Returns {faces:[{poly:[x,y,...], area, bbox}], adj: Array<Set>, outer: index of the open-space face} */
+function buildFaces(segs, W, H){
+  const vx = [], vy = [], vmap = new Map();
+  const vid = (key, x, y) => { let v = vmap.get(key); if(v === undefined){ v = vx.length; vx.push(x); vy.push(y); vmap.set(key, v) } return v };
+  const all = segs.slice();
+  all.push({ax:0,ay:0,bx:W,by:0,ka:"c0",kb:"c1"},{ax:W,ay:0,bx:W,by:H,ka:"c1",kb:"c2"},
+           {ax:W,ay:H,bx:0,by:H,ka:"c2",kb:"c3"},{ax:0,ay:H,bx:0,by:0,ka:"c3",kb:"c0"});
+  const S = all.length, cuts = new Array(S);
+  for(let i=0;i<S;i++){ const s = all[i]; cuts[i] = [[0, vid(s.ka, s.ax, s.ay)], [1, vid(s.kb, s.bx, s.by)]] }
+  for(let i=0;i<S;i++){
+    const a = all[i], minx = Math.min(a.ax,a.bx), maxx = Math.max(a.ax,a.bx), miny = Math.min(a.ay,a.by), maxy = Math.max(a.ay,a.by);
+    const rx = a.bx-a.ax, ry = a.by-a.ay;
+    for(let j=i+1;j<S;j++){
+      const b = all[j];
+      if(Math.max(b.ax,b.bx) < minx || Math.min(b.ax,b.bx) > maxx || Math.max(b.ay,b.by) < miny || Math.min(b.ay,b.by) > maxy) continue;
+      if(b.ka===a.ka || b.ka===a.kb || b.kb===a.ka || b.kb===a.kb) continue;      // share an endpoint
+      const sx = b.bx-b.ax, sy = b.by-b.ay, den = rx*sy - ry*sx;
+      if(Math.abs(den) < 1e-12) continue;                                         // parallel
+      const qx = b.ax-a.ax, qy = b.ay-a.ay;
+      const t = (qx*sy - qy*sx)/den, u = (qx*ry - qy*rx)/den;
+      if(t <= 1e-9 || t >= 1-1e-9 || u <= 1e-9 || u >= 1-1e-9) continue;
+      const v = vx.length; vx.push(a.ax + rx*t); vy.push(a.ay + ry*t);
+      cuts[i].push([t, v]); cuts[j].push([u, v]);
+    }
+  }
+  // undirected edges between consecutive cut points
+  const ekey = new Set(), eu = [], ev = [];
+  for(let i=0;i<S;i++){
+    const c = cuts[i]; c.sort((p,q)=>p[0]-q[0]);
+    for(let k=1;k<c.length;k++){ const u = c[k-1][1], v = c[k][1]; if(u===v) continue;
+      const key = u<v ? u*1e7+v : v*1e7+u; if(ekey.has(key)) continue; ekey.add(key); eu.push(u); ev.push(v) }
+  }
+  // half-edges: 2e = u->v, 2e+1 = v->u
+  const E = eu.length, NH = 2*E, from = new Int32Array(NH), to = new Int32Array(NH);
+  for(let e=0;e<E;e++){ from[2*e]=eu[e]; to[2*e]=ev[e]; from[2*e+1]=ev[e]; to[2*e+1]=eu[e] }
+  const NV = vx.length, out = Array.from({length:NV}, ()=>[]);
+  const ang = new Float64Array(NH);
+  for(let h=0;h<NH;h++){ ang[h] = Math.atan2(vy[to[h]]-vy[from[h]], vx[to[h]]-vx[from[h]]); out[from[h]].push(h) }
+  const pos = new Int32Array(NH);
+  for(let v=0;v<NV;v++){ out[v].sort((p,q)=>ang[p]-ang[q]); out[v].forEach((h,k)=>pos[h]=k) }
+  const next = new Int32Array(NH);
+  for(let h=0;h<NH;h++){ const t = h^1, o = out[to[h]], k = pos[t]; next[h] = o[(k-1+o.length)%o.length] }
+  // trace faces
+  const face = new Int32Array(NH).fill(-1), loops = [];
+  for(let h0=0;h0<NH;h0++){
+    if(face[h0] >= 0) continue;
+    const id = loops.length, hs = []; let h = h0, guard = 0;
+    do{ face[h] = id; hs.push(h); h = next[h] }while(h !== h0 && ++guard < NH+5);
+    let A = 0; for(const x of hs){ A += vx[from[x]]*vy[to[x]] - vx[to[x]]*vy[from[x]] }
+    loops.push({hs, area:A/2});
+  }
+  // components (union-find over vertices)
+  const par = new Int32Array(NV).map((_,i)=>i), find = x=>{ while(par[x]!==x){ par[x]=par[par[x]]; x=par[x] } return x };
+  for(let e=0;e<E;e++){ const a=find(eu[e]), b=find(ev[e]); if(a!==b) par[a]=b }
+  // bounded faces have positive area with this traversal; each component has one non-positive outer loop
+  const isBounded = loops.map(L=>L.area > 1e-6);
+  const poly = L => { const p = []; for(const x of L.hs){ p.push(vx[from[x]], vy[from[x]]) } return p };
+  const bbox = p => { let a=Infinity,b=Infinity,c=-Infinity,d=-Infinity; for(let i=0;i<p.length;i+=2){ if(p[i]<a)a=p[i]; if(p[i]>c)c=p[i]; if(p[i+1]<b)b=p[i+1]; if(p[i+1]>d)d=p[i+1] } return [a,b,c,d] };
+  const faces = [], fidOfLoop = new Int32Array(loops.length).fill(-1);
+  loops.forEach((L,i)=>{ if(isBounded[i]){ const p = poly(L); fidOfLoop[i] = faces.length; faces.push({poly:p, area:L.area, bbox:bbox(p), comp:find(from[L.hs[0]])}) } });
+  // each outer loop belongs to the smallest face (of another component) containing it
+  const rectComp = find(vmap.get("c0"));
+  let outerFace = -1; for(let f=0;f<faces.length;f++) if(faces[f].comp===rectComp && (outerFace<0 || faces[f].area>faces[outerFace].area)) outerFace = f;
+  const container = new Int32Array(loops.length).fill(-1);
+  const compContainer = new Map();
+  loops.forEach((L,i)=>{
+    if(isBounded[i]) return;
+    const c = find(from[L.hs[0]]);
+    if(c === rectComp){ container[i] = -1; return }
+    if(!compContainer.has(c)){
+      const px = vx[from[L.hs[0]]], py = vy[from[L.hs[0]]]; let best = outerFace;
+      for(let f=0;f<faces.length;f++){ const F = faces[f];
+        if(F.comp===c || F.area >= (best>=0?faces[best].area:Infinity)) continue;
+        const b = F.bbox; if(px<b[0]||px>b[2]||py<b[1]||py>b[3]) continue;
+        if(pip(F.poly, px, py)) best = f }
+      compContainer.set(c, best);
+    }
+    container[i] = compContainer.get(c);
+  });
+  const eff = l => isBounded[l] ? fidOfLoop[l] : container[l];
+  const adj = faces.map(()=>new Set());
+  for(let h=0;h<NH;h++){ const a = eff(face[h]), b = eff(face[h^1]); if(a>=0 && b>=0 && a!==b){ adj[a].add(b); adj[b].add(a) } }
+  return {faces, adj, outer:outerFace};
+}
+function pip(p, x, y){
+  let inside = false;
+  for(let i=0, j=p.length-2; i<p.length; j=i, i+=2){
+    const xi=p[i], yi=p[i+1], xj=p[j], yj=p[j+1];
+    if(((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi)) inside = !inside;
+  }
+  return inside;
+}
+function interiorPoint(F){
+  const p = F.poly; let A=0, cx=0, cy=0;
+  for(let i=0, j=p.length-2; i<p.length; j=i, i+=2){ const c = p[j]*p[i+1]-p[i]*p[j+1]; A+=c; cx+=(p[j]+p[i])*c; cy+=(p[j+1]+p[i+1])*c }
+  if(Math.abs(A) > 1e-9){ cx/=3*A; cy/=3*A; if(pip(p,cx,cy)) return [cx,cy] }
+  for(let i=2;i+3<p.length;i+=2){ const x=(p[0]+p[i]+p[i+2])/3, y=(p[1]+p[i+1]+p[i+3])/3; if(pip(p,x,y)) return [x,y] }
+  return [p[0], p[1]];
+}
+/* Color faces: open space first (black = index 0), then smallest-last order, each face preferring its previous color. */
+function colorFaces(G, K, prev){
+  const {faces, adj, outer} = G, n = faces.length, col = new Int16Array(n).fill(-1);
+  const pref = new Int16Array(n).fill(-1);
+  if(prev && prev.cells){
+    // prev: {cells, cs, cols, list} grid index of last frame's faces, smallest first in each cell
+    for(let f=0;f<n;f++){ if(f===outer) continue; const [x,y] = interiorPoint(faces[f]);
+      const cell = prev.cells.get(((x/prev.cs)|0) + "," + ((y/prev.cs)|0)); pref[f] = 0;
+      if(cell) for(const k of cell){ const P = prev.list[k], b = P.bbox; if(x<b[0]||x>b[2]||y<b[1]||y>b[3]) continue; if(pip(P.poly,x,y)){ pref[f] = P.col; break } } }
+  }
+  if(outer >= 0) col[outer] = 0;
+  const deg = adj.map(s=>s.size), gone = new Uint8Array(n), order = [], buckets = [];
+  let need = 0;
+  for(let v=0;v<n;v++){ if(v===outer){ gone[v]=1; continue } need++; (buckets[deg[v]]||(buckets[deg[v]]=[])).push(v) }
+  let low = 0;
+  while(order.length < need){
+    while(!buckets[low] || !buckets[low].length) low++;
+    const v = buckets[low].pop(); if(gone[v] || deg[v]!==low) continue;
+    gone[v] = 1; order.push(v);
+    for(const u of adj[v]) if(!gone[u]){ deg[u]--; (buckets[deg[u]]||(buckets[deg[u]]=[])).push(u); if(deg[u]<low) low = deg[u] }
+  }
+  const used = new Uint8Array(K);
+  for(let k=order.length-1;k>=0;k--){
+    const v = order[k]; used.fill(0); for(const u of adj[v]) if(col[u]>=0) used[col[u]] = 1;
+    let c = -1;
+    if(pref[v] >= 0 && pref[v] < K && !used[pref[v]]) c = pref[v];
+    else { const free = []; for(let q=0;q<K;q++) if(!used[q]) free.push(q); c = free.length ? free[Math.floor(Math.random()*free.length)] : 0 }
+    col[v] = c;
+  }
+  return col;
+}
+/* Index this frame's faces so next frame can look up "what color was here" quickly. */
+function indexFaces(G, col, cs){
+  cs = cs || 24;
+  const list = [], cells = new Map();
+  G.faces.forEach((F,i)=>{ if(i !== G.outer) list.push({poly:F.poly, bbox:F.bbox, area:F.area, col:col[i]}) });
+  list.sort((a,b)=>a.area-b.area);
+  list.forEach((P,k)=>{ const b = P.bbox;
+    for(let gx=(b[0]/cs)|0; gx<=((b[2]/cs)|0); gx++) for(let gy=(b[1]/cs)|0; gy<=((b[3]/cs)|0); gy++){
+      const key = gx+","+gy; let c = cells.get(key); if(!c){ c = []; cells.set(key,c) } c.push(k) } });
+  return {cells, cs, list};
+}
+
 let fill = null;
 function makeFill(){
-  let FW, FH, NP, lineCv, lg, outCv, og, img, prevCol, label, mask, stack, last = -1, havePrev = false;
-  function resize(){
-    FW = Math.max(1,Math.round(W)); FH = Math.max(1,Math.round(H)); NP = FW*FH;
-    lineCv = document.createElement("canvas"); lineCv.width = FW; lineCv.height = FH; lg = lineCv.getContext("2d",{willReadFrequently:true});
-    outCv = document.createElement("canvas"); outCv.width = FW; outCv.height = FH; og = outCv.getContext("2d"); img = og.createImageData(FW,FH);
-    prevCol = new Uint8Array(NP); label = new Int32Array(NP); mask = new Uint8Array(NP); stack = new Int32Array(NP); havePrev = false; last = -1;
-  }
+  let prev = null, cache = null, last = -1, cost = 0;
   function compute(A){
-    const K = PAL.length;
-    lg.clearRect(0,0,FW,FH); lg.lineWidth = 2; lg.strokeStyle = "#000"; lg.beginPath();
-    for(const i of A.visible){const j = pts.partner[i]; lg.moveTo(A.x(i),A.y(i)); lg.lineTo(A.x(j),A.y(j))}
-    lg.stroke();
-    const a = lg.getImageData(0,0,FW,FH).data;
-    for(let q=0;q<NP;q++){mask[q] = a[q*4+3] > 60 ? 1 : 0; label[q] = mask[q] ? -2 : -1}
-    let nreg = 0;
-    for(let q0=0;q0<NP;q0++){
-      if(label[q0] !== -1) continue;
-      let sp = 0; stack[sp++] = q0; label[q0] = nreg;
-      while(sp){const q = stack[--sp], x = q%FW;
-        if(x>0 && label[q-1]===-1){label[q-1]=nreg;stack[sp++]=q-1}
-        if(x<FW-1 && label[q+1]===-1){label[q+1]=nreg;stack[sp++]=q+1}
-        if(q>=FW && label[q-FW]===-1){label[q-FW]=nreg;stack[sp++]=q-FW}
-        if(q<NP-FW && label[q+FW]===-1){label[q+FW]=nreg;stack[sp++]=q+FW}}
-      nreg++;
+    const t0 = performance.now(), segs = [], seen = new Set();
+    for(const i of A.visible){
+      const j = pts.partner[i], key = i < j ? i*65536 + j : j*65536 + i;
+      if(seen.has(key)) continue; seen.add(key);
+      segs.push({ax:A.x(i), ay:A.y(i), bx:A.x(j), by:A.y(j), ka:i, kb:j});
     }
-    if(!nreg){label.fill(0); nreg = 1}
-    const adj = Array.from({length:nreg},()=>new Set());
-    const near = (q,dx,dy)=>{let x=q%FW,y=(q/FW)|0;for(let s=1;s<=4;s++){x+=dx;y+=dy;if(x<0||y<0||x>=FW||y>=FH)return -1;const r=y*FW+x;if(!mask[r])return label[r]}return -1};
-    for(let q=0;q<NP;q++){ if(!mask[q]) continue;
-      const l=near(q,-1,0), r=near(q,1,0); if(l>=0&&r>=0&&l!==r){adj[l].add(r);adj[r].add(l)}
-      const u=near(q,0,-1), d=near(q,0,1); if(u>=0&&d>=0&&u!==d){adj[u].add(d);adj[d].add(u)} }
-    for(let pass=0;pass<4;pass++) for(let q=0;q<NP;q++){ if(label[q]>=0) continue; const x=q%FW; let v=-1;
-      if(x>0&&label[q-1]>=0)v=label[q-1]; else if(q>=FW&&label[q-FW]>=0)v=label[q-FW]; else if(x<FW-1&&label[q+1]>=0)v=label[q+1]; else if(q<NP-FW&&label[q+FW]>=0)v=label[q+FW];
-      if(v>=0) label[q]=v }
-    for(let q=0;q<NP;q++) if(label[q]<0) label[q]=0;
-    // slivers too small to read as shapes take the color of their biggest neighbor instead of counting
-    const size = new Int32Array(nreg); for(let q=0;q<NP;q++) size[label[q]]++;
-    const TINY = 24, tiny = new Uint8Array(nreg);
-    for(let v=0;v<nreg;v++) if(size[v] < TINY && adj[v].size) tiny[v] = 1;
-    for(let v=0;v<nreg;v++) if(!tiny[v]) for(const u of adj[v]) if(tiny[u]) adj[v].delete(u);
-    // each shape leans toward the color already under it, so colors hold steady between frames
-    const votes = new Float32Array(nreg*K);
-    if(havePrev) for(let q=0;q<NP;q+=3) if(!mask[q]) votes[label[q]*K + prevCol[q]]++;
-    // the biggest shape, usually the open space around everything, prefers black: the screen stays mostly off
-    let big = 0; for(let v=1;v<nreg;v++) if(size[v] > size[big]) big = v;
-    votes[big*K] += NP;
-    // smallest-last ordering: a planar map always leaves a free color among six
-    const deg = adj.map(s=>s.size), gone = new Uint8Array(nreg), order = [], buckets = [];
-    let need = 0;
-    for(let v=0;v<nreg;v++){ if(tiny[v]){ gone[v] = 1; continue } need++; (buckets[deg[v]]||(buckets[deg[v]]=[])).push(v) }
-    let low = 0;
-    while(order.length < need){
-      while(!buckets[low] || !buckets[low].length) low++;
-      const v = buckets[low].pop(); if(gone[v] || deg[v] !== low) continue;
-      gone[v] = 1; order.push(v);
-      for(const u of adj[v]) if(!gone[u]){deg[u]--; (buckets[deg[u]]||(buckets[deg[u]]=[])).push(u); if(deg[u]<low) low = deg[u]}
+    const G = buildFaces(segs, W, H), col = colorFaces(G, PAL.length, prev);
+    prev = indexFaces(G, col);
+    const order = G.faces.map((F,i)=>i).filter(i=>i !== G.outer).sort((a,b)=>G.faces[b].area - G.faces[a].area);
+    cache = order.map(i=>({poly:G.faces[i].poly, c:PAL[col[i]]}));
+    cost = performance.now() - t0;
+  }
+  function paint(){
+    g.fillStyle = PAL[0]; g.fillRect(0,0,W,H);
+    g.lineJoin = "round"; g.lineWidth = 0.75;          // a hairline in the shape's own color hides the seams between shapes
+    for(const F of cache){
+      const p = F.poly; g.beginPath(); g.moveTo(p[0],p[1]);
+      for(let k=2;k<p.length;k+=2) g.lineTo(p[k],p[k+1]);
+      g.closePath(); g.fillStyle = F.c; g.strokeStyle = F.c; g.fill(); g.stroke();
     }
-    const col = new Int16Array(nreg).fill(-1), used = new Uint8Array(K);
-    col[big] = 0;                       // color the open space first so new shapes at its edge can't take black from it
-    for(let k=order.length-1;k>=0;k--){
-      const v = order[k]; if(v === big) continue; used.fill(0); for(const u of adj[v]) if(col[u]>=0) used[col[u]] = 1;
-      let best = -1, bv = -1;
-      for(let c=0;c<K;c++){ if(used[c]) continue; const sc = votes[v*K+c] + rand()*.5; if(sc>bv){bv=sc;best=c} }
-      col[v] = best < 0 ? 0 : best;
-    }
-    for(let v=0;v<nreg;v++) if(tiny[v]){ let b = -1; for(const u of adj[v]) if(!tiny[u] && (b < 0 || size[u] > size[b])) b = u; col[v] = b >= 0 ? col[b] : 0 }
-    const d = img.data;
-    for(let q=0;q<NP;q++){const c = col[label[q]], rgb = PAL_RGB[c]; prevCol[q] = c; const o = q*4; d[o]=rgb[0]; d[o+1]=rgb[1]; d[o+2]=rgb[2]; d[o+3]=255}
-    og.putImageData(img,0,0); havePrev = true;
   }
   return {
-    resize, reset(){havePrev = false; last = -1},
+    resize(){ prev = null; last = -1 }, reset(){ prev = null; last = -1 },
     draw(A){
-      if(last < 0 || A.real - last > 80){ last = A.real; compute(A) }
-      g.imageSmoothingEnabled = false; g.drawImage(outCv,0,0,W,H);
+      // recompute every frame when it's cheap; back off on slow phones or dense settings
+      if(!cache || last < 0 || A.real - last >= Math.max(0, cost*2.5 - 16)){ last = A.real; compute(A) }
+      paint();
     }
   };
 }
@@ -315,10 +414,13 @@ setInterval(saveState, 15000);
 
 /* ---------- motion: tilt drifts the points downhill; hold + tilt adjusts ---------- */
 let ori = null, rest = null, restRest = true, motionAsked = false;
+let motionOn = false;
 function askMotion(){
-  if(motionAsked) return; motionAsked = true;
+  if(motionAsked || motionOn) return; motionAsked = true;
   const ask = (E)=> E && typeof E.requestPermission === "function" ? E.requestPermission().catch(()=>"denied") : Promise.resolve("granted");
-  Promise.all([ask(window.DeviceOrientationEvent), ask(window.DeviceMotionEvent)]).then(()=>{
+  Promise.all([ask(window.DeviceOrientationEvent), ask(window.DeviceMotionEvent)]).then(r=>{
+    if(r[0] !== "granted"){ motionAsked = false; return }     // try again on a later tap
+    motionOn = true;
     addEventListener("deviceorientation", e=>{
       if(e.beta == null) return;
       ori = [e.beta, e.gamma];
@@ -355,8 +457,9 @@ function applyHold(){
 }
 function endHold(){ if(hold){ hold = null; saveCfg() } }
 function onDown(x,y,touches){
-  askMotion(); keepAwake();
-  if(touches >= 3){ clearTimeout(holdTimer); clearTimeout(studioTimer); studioTimer = setTimeout(openStudio, 700); down = null; return }
+  keepAwake();
+  if(touches === 2){ clearTimeout(holdTimer); clearTimeout(studioTimer); studioTimer = setTimeout(openStudio, 1000); down = null; return }
+  if(touches > 2){ clearTimeout(studioTimer); return }
   if(touches !== 1){ clearTimeout(holdTimer); return }
   down = {x, y, t: Date.now(), moved:false};
   holdTimer = setTimeout(startHold, 260);
@@ -367,6 +470,7 @@ function onMove(x,y){
   if(hold){ hold.dx = x-hold.x; hold.dy = y-hold.y; applyHold() }
 }
 function onUp(x,y){
+  askMotion();
   clearTimeout(holdTimer); clearTimeout(studioTimer);
   if(hold){ endHold(); down = null; return }
   if(down && !down.moved && Date.now()-down.t < 260){
@@ -378,7 +482,7 @@ function onUp(x,y){
 }
 cv.addEventListener("touchstart", e=>{ e.preventDefault(); const t=e.touches[0]; onDown(t.clientX,t.clientY,e.touches.length) }, {passive:false});
 cv.addEventListener("touchmove",  e=>{ e.preventDefault(); const t=e.touches[0]; onMove(t.clientX,t.clientY) }, {passive:false});
-cv.addEventListener("touchend",   e=>{ e.preventDefault(); if(e.touches.length<3) clearTimeout(studioTimer); const t=e.changedTouches[0]; if(e.touches.length===0) onUp(t.clientX,t.clientY) }, {passive:false});
+cv.addEventListener("touchend",   e=>{ e.preventDefault(); if(e.touches.length<2) clearTimeout(studioTimer); const t=e.changedTouches[0]; if(e.touches.length===0) onUp(t.clientX,t.clientY) }, {passive:false});
 cv.addEventListener("touchcancel",()=>{ clearTimeout(holdTimer); clearTimeout(studioTimer); endHold(); down=null });
 // mouse and keys, for trying it on a computer
 cv.addEventListener("mousedown", e=>onDown(e.clientX,e.clientY,1));
