@@ -1,5 +1,5 @@
 /* Offline support. Bump VERSION whenever you want to be sure phones refresh everything. */
-const VERSION = "connectome-2";
+const VERSION = "connectome-3";
 const SHELL = ["./", "index.html", "manifest.webmanifest", "settings.json", "icon-180.png", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", e => {

@@ -9,12 +9,13 @@ A phone that does one thing. 1,000 invisible points, each tied to another by an 
 | Tilt the phone | Points drift slowly downhill |
 | Hold one finger, then tilt forward or back | Fewer or more lines |
 | Hold one finger, then tilt left or right | Slower or faster |
-| Double-tap | Switch between Lines and Fill |
+| Tap once | Pause or resume. While paused nothing moves, and the points stop drifting even when the phone sleeps. A pause ends on its own after 30 minutes so a still image can't burn into the screen |
+| Double-tap | Switch between Lines and Fill (works while paused too) |
 | Shake | Scatter: start over with new points |
 | Hold two fingers still for about a second | Open the studio (every setting, as sliders) |
 | Side button | Sleep and wake. While asleep, the points keep drifting, so it wakes up changed |
 
-If motion isn't available, holding one finger and dragging does the same as hold-and-tilt. On a computer: drag with the mouse, double-click, press **S** for the studio and **R** for new points.
+If motion isn't available, holding one finger and dragging does the same as hold-and-tilt. On a computer: drag with the mouse, click to pause, double-click to switch, press **S** for the studio, **R** for new points, **Space** to pause.
 
 ## Put it online (once, about 15 minutes)
 
@@ -69,4 +70,4 @@ To get out: triple-click the side button and enter your code.
 - Waking the phone may flash the lock screen for a moment before the piece returns.
 - If iOS clears the app from memory during a long sleep, it reloads, picks up the same points, and fast-forwards them.
 - If the phone restarts or the battery dies, Guided Access turns off. Open Connectome and triple-click again.
-- Updates: if a change on GitHub doesn't show up, open `sw.js`, raise the number at the end of `connectome-2`, and save. That forces phones to refresh everything.
+- Updates: if a change on GitHub doesn't show up, open `sw.js`, raise the number at the end of `connectome-3`, and save. That forces phones to refresh everything.
